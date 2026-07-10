@@ -339,12 +339,13 @@ services:
       POSTGRES_USER: ${APP_DB_USER:-app}
       POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-app}
       POSTGRES_DB: ${APP_DB_NAME:-appdb}
+    command: ["postgres", "-c", "log_timezone=Asia/Kolkata", "-c", "timezone=Asia/Kolkata"]
     ports:
       - "5433:5432"
     volumes:
       - app-postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USER:-app}"]
+      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USER:-app} -d ${APP_DB_NAME:-appdb}"]
       interval: 10s
       retries: 5
       start_period: 5s
