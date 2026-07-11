@@ -7,3 +7,4 @@ logs/
 airflow.db
 airflow-webserver.pid
 .DS_Store
+.vscode/
