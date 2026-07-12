@@ -76,9 +76,18 @@ def ecommerce_daily_pipeline():
 
     @task
     def run_dq_checks(transformed: dict) -> str:
-        if transformed.get("orders", 0) <= 0:
-            raise ValueError("Orders are 0")
-        return "dq_passed"
+        hook= PostgresHook(postgres_conn_id= "app_postgres")
+        #check1 if the amount has any negative value.
+        negative_val= hook.get_first("SELECT amount FROM staging_orders WHERE amount < 0")
+        if (negative_val):
+            raise ValueError("there are orders with amount < 0")
+        #check2 if there is any status which is null.
+        null_check= hook.get_first("SELECT status FROM staging_orders WHERE status IS NULL OR status = ' '")
+        if (null_check):
+            raise ValueError("there are status which are null or empty")
+
+        return "dq_check_passed"
+
 
     @task
     def mark_success(dq_status: str) -> str:
