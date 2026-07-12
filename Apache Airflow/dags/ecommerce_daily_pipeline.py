@@ -54,11 +54,19 @@ def ecommerce_daily_pipeline():
         cursor= conn.cursor()
         cursor.execute(
             "INSERT INTO public.staging_orders(order_id, customer_name, channel, amount, status, updated_at) \
-                SELECT order_id, customer_name, channel, amount, status, updated_at FROM source_orders WHERE updated_at > %s AND updated_at <= %s",\
-                    (validated["old_watermark"], validated["new_watermark"])
+                SELECT order_id, customer_name, channel, amount, status, updated_at FROM source_orders \
+                    WHERE updated_at > %s AND updated_at <= %s \
+                        ON CONFLICT (order_id) DO UPDATE SET \
+                            customer_name = EXCLUDED.customer_name, \
+                            channel = EXCLUDED.channel, \
+                            amount = EXCLUDED.amount, \
+                            status = EXCLUDED.status, \
+                            updated_at = EXCLUDED.updated_at, \
+                            loaded_at = now()", (validated["old_watermark"], validated["new_watermark"])
             )
         cursor.execute("UPDATE pipeline_watermark SET last_extracted_at = %s WHERE pipeline_name= %s", (validated["new_watermark"], "ecommerce_dag"))
         conn.commit()
+        conn.close()
         return validated
 
     @task
