@@ -1,7 +1,7 @@
 from datetime import timedelta
 from airflow.sdk import dag, task
 import pendulum
-import random
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 
 @dag(
@@ -18,36 +18,53 @@ import random
 )
 def ecommerce_daily_pipeline():
     @task.python
-    def check_source_availability() -> dict:
+    def psql_db_conn() -> bool:
         print("checking the source data if connection is established")
-        source_count = random.randint(-1,5)
-        if source_count > 0:
-            return {"status": True, "count":source_count}
-        return {"status": False, "count":source_count}
+        hook=PostgresHook(postgres_conn_id="app_postgres",)
+        hook.get_first("SELECT 1")
+        return True
 
     @task.python
-    def extract(check_result: dict) -> int:
-        if not check_result["status"]:
-            raise ValueError("Unable to connect to the data base")
-        else:
-            db_count = check_result["count"]
-            print(f"extracting {db_count} rows from the source table")
-        return db_count
+    def check_watermark() -> str:
+            print("Checking the latest watermark in the pipeline_watermark table")
+            hook=PostgresHook(postgres_conn_id="app_postgres",)
+            watermark_val= hook.get_first("SELECT last_extracted_at from pipeline_watermark WHERE pipeline_name = %s", parameters = ("ecommerce_dag",))
+            return str(watermark_val[0])
 
     @task.python
-    def validate_data(extracted: int) -> int:
-        if extracted <= 0:
-            raise ValueError(f"data is not valid, extracted rows are:{extracted}")   
+    def extract(watermark: str) -> dict:
+        hook= PostgresHook(postgres_conn_id="app_postgres")
+        result= hook.get_first("SELECT count(*) AS cnt, MAX(updated_at) AS max_date FROM source_orders WHERE updated_at > %s", parameters= (watermark,))
+        count, max_date= result 
+        return {
+            "count":count,
+            "new_watermark":str(max_date),
+            "old_watermark":watermark
+        }
+    @task.python
+    def validate_data(extracted: dict) -> dict:
+        if extracted["count"] <= 0:
+            raise ValueError(f"no new rows to process, count={extracted['count']}")
         return extracted
 
     @task
-    def load_data(validated: int) -> dict:
-        return {"orders": validated, "status": "staged"}
+    def load_data(validated: dict) -> dict:
+        hook= PostgresHook(postgres_conn_id= "app_postgres")
+        conn= hook.get_conn()
+        cursor= conn.cursor()
+        cursor.execute(
+            "INSERT INTO public.staging_orders(order_id, customer_name, channel, amount, status, updated_at) \
+                SELECT order_id, customer_name, channel, amount, status, updated_at FROM source_orders WHERE updated_at > %s AND updated_at <= %s",\
+                    (validated["old_watermark"], validated["new_watermark"])
+            )
+        cursor.execute("UPDATE pipeline_watermark SET last_extracted_at = %s WHERE pipeline_name= %s", (validated["new_watermark"], "ecommerce_dag"))
+        conn.commit()
+        return validated
 
     @task
     def transform_data(loaded: dict) -> dict:
-        loaded["transformed"] = True
-        return loaded
+        loaded["transformed"]= True
+        return {"orders": loaded["count"], "status":"staged"}
 
     @task
     def run_dq_checks(transformed: dict) -> str:
@@ -59,9 +76,10 @@ def ecommerce_daily_pipeline():
     def mark_success(dq_status: str) -> str:
         return "success"
 
-    source_check = check_source_availability()
-    extracted = extract(source_check)
-    validated = validate_data(extracted)
+    watermark_check = check_watermark()
+    psql_db_conn() >> watermark_check
+    extract_dates= extract(watermark_check)
+    validated = validate_data(extract_dates)
     loaded = load_data(validated)
     transformed = transform_data(loaded)
     dq_result = run_dq_checks(transformed)
